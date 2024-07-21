@@ -54,15 +54,17 @@ def parse_args():
     parser.add_argument('--early_cutoff_time', type=int, default=60, help='Where to start making the one-time customized model')
 
     args = parser.parse_args()
-    
-    SIZE = [args.height, args.height * 2]
 
     assert not args.enable_ATR or args.enable_ASR, 'ASR must be enabled for ATR to work'
     assert not args.enable_ASR or args.mode == 'simple', 'ASR can only be used in simple mode'
     assert not args.enable_ATR or args.mode == 'simple', 'ATR can only be used in simple mode'
 
     # print('Arguments:', args)
+    return args
+
+
 flags = parse_args()
+SIZE = [flags.height, flags.height * 2]
 
 def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_path, exp_num, save_range,
                 sample_send_period):
@@ -91,7 +93,7 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
     """
     assert train_end - train_start != 0, "There should be at least one set of data points"
     # Open video, get the fps and set it's starting point to train_start
-    cap = cv2.VideoCapture(FLAGS.input_video)
+    cap = cv2.VideoCapture(flags.input_video)
     if not cap.isOpened():
         print_process("Error opening video stream or file", -1)
         exit(1)
@@ -121,23 +123,23 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
     map_coco = None
     if is_coco(exp_num):
         map_coco = coco_class_converter()
-    # Use deques to keep a finite number of data points, representing a span of FLAGS.memory_len amount of seconds
-    frame_memory = deque(maxlen=int(FLAGS.memory_len / sampling_period * fps))
-    label_memory = deque(maxlen=int(FLAGS.memory_len / sampling_period * fps))
-    to_compress_frame_memory = deque(maxlen=int(FLAGS.memory_len / sampling_period * fps))
+    # Use deques to keep a finite number of data points, representing a span of flags.memory_len amount of seconds
+    frame_memory = deque(maxlen=int(flags.memory_len / sampling_period * fps))
+    label_memory = deque(maxlen=int(flags.memory_len / sampling_period * fps))
+    to_compress_frame_memory = deque(maxlen=int(flags.memory_len / sampling_period * fps))
     # Initialize the model
-    semantic_network = SemanticNetwork(meta_dir=FLAGS.student_checkpoint,
+    semantic_network = SemanticNetwork(meta_dir=flags.student_checkpoint,
                                        class_weights_exp=class_weights(exp_num),
-                                       height=FLAGS.height,
+                                       height=flags.height,
                                        gpu_id=gpu_id,
                                        scale=[1],
-                                       mini_batch_size=FLAGS.batch_size,
-                                       lr=FLAGS.lr,
+                                       mini_batch_size=flags.batch_size,
+                                       lr=flags.lr,
                                        mem_frac=1,
-                                       coord_frac=float(FLAGS.coord_fraction),
+                                       coord_frac=float(flags.coord_fraction),
                                        train_biases_only=False,
                                        regularize=False,
-                                       masked_gradients=FLAGS.train_strategy not in ['full_model'],
+                                       masked_gradients=flags.train_strategy not in ['full_model'],
                                        cross_miou_compat=flags.enable_ASR)
     # Initially save the model
     save_dir = get_save_dir(run_label + "_%d" % train_start)
@@ -163,7 +165,7 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
             # When it's time to send, choose frames to send based on send_rate
             frames_chosen, labels_chosen = choose_frames(frame_label_bucket, send_rate)
             for frame, label in zip(frames_chosen, labels_chosen):
-                if FLAGS.compress_uplink:
+                if flags.compress_uplink:
                     # If we use compress_uplink, use twice the resolution to send a higher quality
                     frame = cv2.resize(frame, (SIZE[1] * 2, SIZE[0] * 2))
                 else:
@@ -181,7 +183,7 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
             # Log unseen frames to use for computing phi-score in ASR
             num_unseen_frames += num_frames
 
-            if FLAGS.compress_uplink:
+            if flags.compress_uplink:
                 # First write frames to video files using FFMPEG, then read frames from that video and append them to
                 # the server's memory
                 output_video_file = f"{get_save_dir(run_label)}_tmp_movie.mp4"
@@ -203,7 +205,7 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
                                  '-vcodec', 'libx264',
                                  '-pix_fmt', 'yuv420p',
                                  '-preset', 'medium',
-                                 '-b:v', '%dk' % (FLAGS.uplink_bw * sample_send_period),
+                                 '-b:v', '%dk' % (flags.uplink_bw * sample_send_period),
                                  '-pass', '1',
                                  '-f', 'mp4',
                                  '/dev/null'],
@@ -225,7 +227,7 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
                                  '-vcodec', 'libx264',
                                  '-pix_fmt', 'yuv420p',
                                  '-preset', 'medium',
-                                 '-b:v', '%dk' % (FLAGS.uplink_bw * sample_send_period),
+                                 '-b:v', '%dk' % (flags.uplink_bw * sample_send_period),
                                  '-pass', '2',
                                  f'{output_video_file}'],
                                 stdin=sp.PIPE, stderr=f, stdout=f)
@@ -278,7 +280,7 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
                 print_process("Send rate updated to %.2f" % send_rate, i / fps)
                 num_unseen_frames = 0
 
-            if FLAGS.enable_ATR:
+            if flags.enable_ATR:
                 # Enable or disable hibernation based on phi-score history
                 if np.mean(list(send_rate_deq)) < 0.25:
                     hibernate = True
@@ -295,11 +297,11 @@ def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_p
                 save_range.extend([save_time for save_time in range(i//fps, train_end, train_period_current)])
                 assert i // fps in save_range
 
-            if not FLAGS.no_restore:
+            if not flags.no_restore:
                 semantic_network.restore_initial()
             t1 = time.time()
-            semantic_network.train_with_deque(frame_memory, label_memory, FLAGS.iter, FLAGS.train_strategy)
-            print("Training for %d iterations took %d ms!!!" % (FLAGS.iter, 1000 * (time.time() - t1)))
+            semantic_network.train_with_deque(frame_memory, label_memory, flags.iter, flags.train_strategy)
+            print("Training for %d iterations took %d ms!!!" % (flags.iter, 1000 * (time.time() - t1)))
             whole_params = 0
             # Calculate the down-link bandwidth
             with open(save_dir + '_mask.dat', 'wb') as f:
@@ -372,7 +374,7 @@ def infer_output(inf_start, inf_end, gpu_id, run_label, gt_path, exp_num, load_r
     """
     assert inf_end - inf_start != 0, "There should be at least one set of data points"
     # Open video, get the fps and set it's starting point to train_start
-    cap = cv2.VideoCapture(FLAGS.input_video)
+    cap = cv2.VideoCapture(flags.input_video)
     if not cap.isOpened():
         print_process("Error opening video stream or file", -1)
         exit(1)
@@ -394,7 +396,7 @@ def infer_output(inf_start, inf_end, gpu_id, run_label, gt_path, exp_num, load_r
                 semantic_network.close_model()
             semantic_network = SemanticNetwork(meta_dir=save_dir + "_final",
                                                class_weights_exp=class_weights(exp_num),
-                                               height=FLAGS.height,
+                                               height=flags.height,
                                                gpu_id=gpu_id,
                                                mem_frac=1,
                                                frozen=True)
@@ -427,7 +429,7 @@ def infer_output(inf_start, inf_end, gpu_id, run_label, gt_path, exp_num, load_r
                                                        class_weights=class_weights(exp_num))), i / fps)
         # Save visual results: the teachers output, the student's output, the ignored pixels and the student's
         # wrongly-predicted pixels
-        if FLAGS.save_pic:
+        if flags.save_pic:
             save_dir_pic = final_save_dir + ("_%d_" % (i / fps))
             cross_mask, ignore_mask = semantic_network.cross_ignore(label_teacher=gt_frame,
                                                                     label_student=labels_[0])
@@ -461,7 +463,7 @@ def k1k2_plot(ts, k1s, k2s):
     :type k1s: list
     :type k2s: list
     """
-    cap = cv2.VideoCapture(FLAGS.input_video)
+    cap = cv2.VideoCapture(flags.input_video)
     if not cap.isOpened():
         print_process("Error opening video stream or file", -1)
         exit(1)
@@ -489,7 +491,7 @@ def k1k2_plot(ts, k1s, k2s):
             diff_conf_mious, diff_avg_mious, diff_mem_mious = [], [], []
             for t in ts:
                 trained_conf_mats = np.load(get_save_dir("%d__%d__%d_f%d_results" %
-                                                         (t - k1, t, t + k2s[-1], FLAGS.send_period)) + "_mioucats.npy")
+                                                         (t - k1, t, t + k2s[-1], flags.send_period)) + "_mioucats.npy")
                 assert trained_conf_mats[:k2 * fps].shape == pretrained_confmats[t * fps:(t + k2) * fps].shape
                 pretrained_conf_miou = np.nanmean(calculate_miou(
                     np.sum(pretrained_confmats[t * fps:(t + k2) * fps], axis=0), nan=True))
@@ -497,14 +499,14 @@ def k1k2_plot(ts, k1s, k2s):
                 diff_conf_mious.append(trained_conf_miou - pretrained_conf_miou)
 
                 trained_mious = np.load(get_save_dir("%d__%d__%d_f%d_results" %
-                                                     (t - k1, t, t + k2s[-1], FLAGS.send_period)) + "_mious.npy")
+                                                     (t - k1, t, t + k2s[-1], flags.send_period)) + "_mious.npy")
                 assert trained_mious[:k2 * fps].shape == pretrained_mious[t * fps:(t + k2) * fps].shape
                 pretrained_avg_miou = np.mean(pretrained_mious[t * fps:(t + k2) * fps])
                 trained_avg_miou = np.mean(trained_mious[:k2 * fps])
                 diff_avg_mious.append(trained_avg_miou - pretrained_avg_miou)
 
                 trained_miou_mems = np.load(get_save_dir("%d__%d__%d_f%d_results" %
-                                                     (t - k1, t, t + k2s[-1], FLAGS.send_period)) + "_mioumems.npy")
+                                                     (t - k1, t, t + k2s[-1], flags.send_period)) + "_mioumems.npy")
                 assert trained_miou_mems[:k2 * fps].shape == pretrained_miou_mems[t * fps:(t + k2) * fps].shape
                 pretrained_mioumem = np.mean(pretrained_miou_mems[t * fps:(t + k2) * fps])
                 trained_mioumem = np.mean(trained_miou_mems[:k2 * fps])
@@ -558,8 +560,8 @@ def get_save_dir(prepend):
     :rtype: str
     """
 
-    return FLAGS.output_dir + '%s_%s_%s_%d' % (prepend, FLAGS.input_video.split('/')[-1],
-                                               FLAGS.student_checkpoint.split('/')[-2], FLAGS.height)
+    return flags.output_dir + '%s_%s_%s_%d' % (prepend, flags.input_video.split('/')[-1],
+                                               flags.student_checkpoint.split('/')[-2], flags.height)
 
 
 def print_process(str_log, curr_time):
@@ -573,29 +575,29 @@ def print_process(str_log, curr_time):
 
 def main():
     try:
-        os.makedirs(FLAGS.output_dir)
+        os.makedirs(flags.output_dir)
     except FileExistsError:
         pass
 
-    vid_num = int(FLAGS.input_video.split("/")[-1].split("-")[0])
+    vid_num = int(flags.input_video.split("/")[-1].split("-")[0])
 
-    if FLAGS.mode == 'simple':
-        run_label = "%d__%d_tp%d_f%d" % (0, test_length(vid_num), FLAGS.train_period, FLAGS.send_period)
+    if flags.mode == 'simple':
+        run_label = "%d__%d_tp%d_f%d" % (0, test_length(vid_num), flags.train_period, flags.send_period)
         event_list = [0]
-        first_train = np.ceil(100 / FLAGS.train_period) * FLAGS.train_period
-        event_list.extend([i for i in range(first_train, test_length(vid_num), FLAGS.train_period)
-                           if i == 0 or i >= FLAGS.memory_len or not FLAGS.initial_fill])
-        if not FLAGS.only_results:
-            train_model(0, test_length(vid_num), FLAGS.send_period, FLAGS.gpu,
-                        run_label, FLAGS.gt_video, vid_num, event_list, FLAGS.train_period)
+        first_train = np.ceil(100 / flags.train_period) * flags.train_period
+        event_list.extend([i for i in range(first_train, test_length(vid_num), flags.train_period)
+                           if i == 0 or i >= flags.memory_len or not flags.initial_fill])
+        if not flags.only_results:
+            train_model(0, test_length(vid_num), flags.send_period, flags.gpu,
+                        run_label, flags.gt_video, vid_num, event_list, flags.train_period)
             if flags.enable_ATR:
                 # When ATR is enabled event_list can change, so load it
                 event_list = np.load(get_save_dir(run_label + "_results") + '_model_update_times.npy').tolist()
-            infer_output(0, test_length(vid_num), FLAGS.gpu,
-                         run_label, FLAGS.gt_video, vid_num, event_list)
+            infer_output(0, test_length(vid_num), flags.gpu,
+                         run_label, flags.gt_video, vid_num, event_list)
 
-        plot_miou_mean(FLAGS.train_period, FLAGS.send_period, run_label)
-    elif FLAGS.mode == 'horizon':
+        plot_miou_mean(flags.train_period, flags.send_period, run_label)
+    elif flags.mode == 'horizon':
         # TODO: Arash, please double check this part to make sure it is exactly what we did for the paper, especially
         # TODO: the hyper-parameters
         k1s = [16, 32, 64, 128, 256, 512]
@@ -603,22 +605,22 @@ def main():
         # Choose 50 points across time to smooth out noisy curves
         number_of_points = 3
         step = (test_length(vid_num) - k2 - k1s[-1]) // (number_of_points - 1)
-        if not FLAGS.only_results:
+        if not flags.only_results:
             # Get pretrained data
             run_label = "pretrained"
-            train_model(0, 1, FLAGS.send_period, FLAGS.gpu, run_label, FLAGS.gt_video, vid_num, [0], FLAGS.train_period)
-            infer_output(0, test_length(vid_num), FLAGS.gpu, run_label, FLAGS.gt_video, vid_num, [0])
+            train_model(0, 1, flags.send_period, flags.gpu, run_label, flags.gt_video, vid_num, [0], flags.train_period)
+            infer_output(0, test_length(vid_num), flags.gpu, run_label, flags.gt_video, vid_num, [0])
             done = 0
             total = number_of_points * len(k1s)
             time_start = time.time()
             for i in range(number_of_points):
                 t = k1s[-1] + i * step
                 for k1 in k1s:
-                    run_label = "%d__%d__%d_f%d" % (t - k1, t, t + k2, FLAGS.send_period)
+                    run_label = "%d__%d__%d_f%d" % (t - k1, t, t + k2, flags.send_period)
                     print("t: %d, k1: %d" % (t, k1))
-                    train_model(t - k1, t, FLAGS.send_period, FLAGS.gpu, run_label, FLAGS.gt_video, vid_num, [t],
-                                FLAGS.train_period)
-                    infer_output(t, t + k2, FLAGS.gpu, run_label, FLAGS.gt_video, vid_num, [t])
+                    train_model(t - k1, t, flags.send_period, flags.gpu, run_label, flags.gt_video, vid_num, [t],
+                                flags.train_period)
+                    infer_output(t, t + k2, flags.gpu, run_label, flags.gt_video, vid_num, [t])
                     done += 1
                     time_to_finish = (time.time() - time_start) / done * (total - done)
                     print("ETF %02d:%02d.%02d" % (time_to_finish // 60, time_to_finish % 60,
@@ -630,19 +632,19 @@ def main():
             t = k1s[-1] + i * step
             ts.append(t)
         k1k2_plot(ts, k1s, k2s)
-    elif FLAGS.mode == 'early':
-        run_label = "early%d_f%d" % (FLAGS.early_cutoff_time, FLAGS.send_period)
-        event_list = [0, FLAGS.early_cutoff_time]
-        if not FLAGS.only_results:
-            train_model(0, FLAGS.early_cutoff_time, FLAGS.send_period, FLAGS.gpu, run_label, FLAGS.gt_video, vid_num,
-                        event_list, FLAGS.train_period)
-            infer_output(0, test_length(vid_num), FLAGS.gpu, run_label, FLAGS.gt_video, vid_num, event_list)
+    elif flags.mode == 'early':
+        run_label = "early%d_f%d" % (flags.early_cutoff_time, flags.send_period)
+        event_list = [0, flags.early_cutoff_time]
+        if not flags.only_results:
+            train_model(0, flags.early_cutoff_time, flags.send_period, flags.gpu, run_label, flags.gt_video, vid_num,
+                        event_list, flags.train_period)
+            infer_output(0, test_length(vid_num), flags.gpu, run_label, flags.gt_video, vid_num, event_list)
 
-        plot_miou_mean(-1, FLAGS.send_period, run_label)
-    elif FLAGS.mode == 'pretrained':
+        plot_miou_mean(-1, flags.send_period, run_label)
+    elif flags.mode == 'pretrained':
         run_label = "pretrained"
-        train_model(0, 1, FLAGS.send_period, FLAGS.gpu, run_label, FLAGS.gt_video, vid_num, [0], FLAGS.train_period)
-        infer_output(0, test_length(vid_num), FLAGS.gpu, run_label, FLAGS.gt_video, vid_num, [0])
+        train_model(0, 1, flags.send_period, flags.gpu, run_label, flags.gt_video, vid_num, [0], flags.train_period)
+        infer_output(0, test_length(vid_num), flags.gpu, run_label, flags.gt_video, vid_num, [0])
         plot_miou_mean(-1, -1, run_label)
 
     print(colored("Process [Main]:", "green"), "Done!!!")
