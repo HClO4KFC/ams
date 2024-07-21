@@ -11,69 +11,58 @@ from ams.SemanticNetwork import SemanticNetwork
 from termcolor import colored
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import tensorflow as tf
+import argparse
+def parse_args():
+    parser = argparse.ArgumentParser(description='TensorFlow Training Script')
+    parser.add_argument('--input_video', type=str, required=True, help='Directory for the video')
+    parser.add_argument('--gt_video', type=str, required=True, help='Directory for the ground truth labels of video')
+    parser.add_argument('--student_checkpoint', type=str, required=True, help='Directory for student checkpoint')
+    parser.add_argument('--output_dir', type=str, required=True, help='Directory for the output figure')
+    parser.add_argument('--gpu', type=str, required=True, help='GPU to use for this')
 
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+    parser.add_argument('--initial_fill', action='store_true', help='When true, doesn\'t train until memory is full')
+    parser.add_argument('--memory_len', type=int, default=250, help='Memory length')
+    parser.add_argument('--batch_size', type=int, default=10, help='Mini batch size')
+    parser.add_argument('--iter', type=int, default=200, help='# of iterations')
+    parser.add_argument('--height', type=int, default=256, help='height of video')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
 
-flags = tf.app.flags
-FLAGS = flags.FLAGS
-flags.DEFINE_string('input_video', None, 'Directory for the video')
-flags.mark_flag_as_required('input_video')
-flags.DEFINE_string('gt_video', None, 'Directory for the ground truth labels of video')
-flags.mark_flag_as_required('gt_video')
-flags.DEFINE_string('student_checkpoint', None, 'Directory for student checkpoint')
-flags.mark_flag_as_required('student_checkpoint')
-flags.DEFINE_string('output_dir', None, 'Directory for the output figure')
-flags.mark_flag_as_required('output_dir')
-flags.DEFINE_string('gpu', None, 'GPU to use for this')
-flags.mark_flag_as_required('gpu')
+    parser.add_argument('--send_period', type=int, default=30, help='Period between frame sample arrival')
+    parser.add_argument('--train_period', type=int, default=10, help='Training rate')
 
-flags.DEFINE_bool('initial_fill', False, 'When true, doesn\'t train until memory is full')
-flags.DEFINE_integer('memory_len', 250, 'Memory length')
-flags.DEFINE_integer('batch_size', 10, 'Mini batch size')
-flags.DEFINE_integer('iter', 200, '# of iterations')
-flags.DEFINE_integer('height', 256, 'height of video')
-flags.DEFINE_float('lr', 1e-3, 'Learning rate')
+    parser.add_argument('--only_results', action='store_true', help='Just print the results')
+    parser.add_argument('--compress_uplink', action='store_true', help='Compress the uplink using H264 encoding')
+    parser.add_argument('--no_restore', action='store_true', help='Do not restore the model on every training')
+    parser.add_argument('--save_pic', action='store_true', help='Save the pictures in inference')
 
-flags.DEFINE_integer('send_period', 30, 'Period between frame sample arrival')
-flags.DEFINE_integer('train_period', 10, 'Training rate')
+    parser.add_argument('--enable_ASR', action='store_true', help='Enable Adaptive Sampling Rate')
+    parser.add_argument('--enable_ATR', action='store_true', help='Enable Adaptive Training Rate')
 
-flags.DEFINE_bool('only_results', False, 'Just print the results')
-flags.DEFINE_bool('compress_uplink', False, 'Compress the uplink using H264 encoding')
-flags.DEFINE_bool('no_restore', False, 'Do not restore the model on every training')
-flags.DEFINE_bool('save_pic', False, 'Save the pictures in inference')
+    parser.add_argument('--train_strategy', type=str, default='full_model', choices=['full_model',
+                                                                                     'coord_desc_auto',
+                                                                                     'coord_desc_last',
+                                                                                     'coord_desc_first',
+                                                                                     'coord_desc_both',
+                                                                                     'coord_desc_rand'],
+                        help='Strategy of selecting which parts of the model to retrain every time')
+    parser.add_argument('--coord_fraction', type=str, default='0.1', choices=['0.1', '0.05', '0.2', '0.01'],
+                        help='Fraction of parameters trained in coordinate descent mode')
 
-flags.DEFINE_bool('enable_ASR', False, 'Enable Adaptive Sampling Rate')
-flags.DEFINE_bool('enable_ATR', False, 'Enable Adaptive Training Rate')
+    parser.add_argument('--mode', type=str, required=True, choices=['simple', 'pretrained', 'horizon', 'early'],
+                        help='Profiling mode')
+    
+    parser.add_argument('--early_cutoff_time', type=int, default=60, help='Where to start making the one-time customized model')
 
-flags.DEFINE_enum('train_strategy', 'full_model', ['full_model',
-                                                   'coord_desc_auto',
-                                                   'coord_desc_last',
-                                                   'coord_desc_first',
-                                                   'coord_desc_both',
-                                                   'coord_desc_rand'],
-                  'Strategy of selecting which parts of the model to retrain every time')
-flags.DEFINE_enum('coord_fraction', '0.1', ['0.1',
-                                            '0.05',
-                                            '0.2',
-                                            '0.01'],
-                  'Fraction of parameters trained in coordinate descent mode')
+    args = parser.parse_args()
+    
+    SIZE = [args.height, args.height * 2]
 
-flags.DEFINE_enum('mode', None, ['simple',
-                                 'pretrained',
-                                 'horizon',
-                                 'early'],
-                  'Profiling mode')
-flags.mark_flag_as_required('mode')
+    assert not args.enable_ATR or args.enable_ASR, 'ASR must be enabled for ATR to work'
+    assert not args.enable_ASR or args.mode == 'simple', 'ASR can only be used in simple mode'
+    assert not args.enable_ATR or args.mode == 'simple', 'ATR can only be used in simple mode'
 
-flags.DEFINE_integer('early_cutoff_time', 60, 'Where to start making the one-time customized model')
-
-SIZE = [FLAGS.height, FLAGS.height * 2]
-
-assert not flags.enable_ATR or flags.enable_ASR, 'ASR must be enabled for ATR to work'
-assert not flags.enable_ASR or flags.mode == 'simple', 'ASR can only be used in simple mode'
-assert not flags.enable_ATR or flags.mode == 'simple', 'ATR can only be used in simple mode'
-
+    # print('Arguments:', args)
+flags = parse_args()
 
 def train_model(train_start, train_end, sampling_period, gpu_id, run_label, gt_path, exp_num, save_range,
                 sample_send_period):
